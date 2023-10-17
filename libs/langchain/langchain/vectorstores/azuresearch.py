@@ -62,63 +62,6 @@ FIELDS_METADATA = get_from_env(
 
 MAX_UPLOAD_BATCH_SIZE = 1000
 
-
-def _get_search_client(
-    endpoint: str,
-    key: str,
-    index_name: str,
-    semantic_configuration_name: Optional[str] = None,
-    fields: Optional[List[SearchField]] = None,
-    vector_search: Optional[VectorSearch] = None,
-    semantic_settings: Optional[SemanticSettings] = None,
-    scoring_profiles: Optional[List[ScoringProfile]] = None,
-    default_scoring_profile: Optional[str] = None,
-    default_fields: Optional[List[SearchField]] = None,
-    user_agent: Optional[str] = "langchain",
-) -> SearchClient:
-    from azure.core.credentials import AzureKeyCredential
-    from azure.core.exceptions import ResourceNotFoundError
-    from azure.identity import DefaultAzureCredential, InteractiveBrowserCredential
-    from azure.search.documents import SearchClient
-    from azure.search.documents.indexes import SearchIndexClient
-
-    default_fields = default_fields or []
-
-    if key is None:
-        credential = DefaultAzureCredential()
-    elif key.upper() == "INTERACTIVE":
-        credential = InteractiveBrowserCredential()
-        credential.get_token("https://search.azure.com/.default")
-    else:
-        credential = AzureKeyCredential(key)
-
-    index_client: SearchIndexClient = SearchIndexClient(
-        endpoint=endpoint, credential=credential, user_agent=user_agent
-    )
-
-    try:
-        index_client.get_index(name=index_name)
-    except ResourceNotFoundError:
-        _create_index(
-            index_name=index_name,
-            index_client=index_client,
-            semantic_configuration_name=semantic_configuration_name,
-            fields=fields,
-            vector_search=vector_search,
-            semantic_settings=semantic_settings,
-            scoring_profiles=scoring_profiles,
-            default_scoring_profile=default_scoring_profile,
-            default_fields=default_fields,
-        )
-
-    # Create the search client
-    return SearchClient(
-        endpoint=endpoint,
-        index_name=index_name,
-        credential=credential,
-        user_agent=user_agent,
-    )
-
 def _create_index(
     index_name: str,
     index_client: SearchIndexClient,
@@ -237,6 +180,10 @@ class AzureSearch(VectorStore):
             SimpleField,
         )
 
+        from azure.core.credentials import AzureKeyCredential
+        from azure.core.exceptions import ResourceNotFoundError
+        from azure.identity import DefaultAzureCredential, InteractiveBrowserCredential
+
         """Initialize with necessary components."""
         # Initialize base class
         self.embedding_function = embedding_function
@@ -266,19 +213,41 @@ class AzureSearch(VectorStore):
         user_agent = "langchain"
         if "user_agent" in kwargs and kwargs["user_agent"]:
             user_agent += " " + kwargs["user_agent"]
-        self.client = _get_search_client(
-            azure_search_endpoint,
-            azure_search_key,
-            index_name,
-            semantic_configuration_name=semantic_configuration_name,
-            fields=fields,
-            vector_search=vector_search,
-            semantic_settings=semantic_settings,
-            scoring_profiles=scoring_profiles,
-            default_scoring_profile=default_scoring_profile,
-            default_fields=default_fields,
+
+        if azure_search_key is None:
+            credential = DefaultAzureCredential()
+        elif azure_search_key.upper() == "INTERACTIVE":
+            credential = InteractiveBrowserCredential()
+            credential.get_token("https://search.azure.com/.default")
+        else:
+            credential = AzureKeyCredential(azure_search_key)
+
+        self.client = SearchClient(
+            endpoint=azure_search_endpoint,
+            index_name=index_name,
+            credential=credential,
             user_agent=user_agent,
         )
+
+        self.index_client: SearchIndexClient = SearchIndexClient(
+            endpoint=azure_search_endpoint, credential=credential, user_agent=user_agent
+        )
+
+        try:
+            self.index_client.get_index(name=index_name)
+        except ResourceNotFoundError:
+            _create_index(
+                index_name=index_name,
+                index_client=self.index_client,
+                semantic_configuration_name=semantic_configuration_name,
+                fields=fields,
+                vector_search=vector_search,
+                semantic_settings=semantic_settings,
+                scoring_profiles=scoring_profiles,
+                default_scoring_profile=default_scoring_profile,
+                default_fields=default_fields,
+            )
+
         self.search_type = search_type
         self.semantic_configuration_name = semantic_configuration_name
         self.semantic_query_language = semantic_query_language
