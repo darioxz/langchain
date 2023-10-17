@@ -33,6 +33,7 @@ logger = logging.getLogger()
 
 if TYPE_CHECKING:
     from azure.search.documents import SearchClient
+    from azure.search.documents.indexes import SearchIndexClient
     from azure.search.documents.indexes.models import (
         ScoringProfile,
         SearchField,
@@ -80,6 +81,56 @@ def _get_search_client(
     from azure.identity import DefaultAzureCredential, InteractiveBrowserCredential
     from azure.search.documents import SearchClient
     from azure.search.documents.indexes import SearchIndexClient
+
+    default_fields = default_fields or []
+
+    if key is None:
+        credential = DefaultAzureCredential()
+    elif key.upper() == "INTERACTIVE":
+        credential = InteractiveBrowserCredential()
+        credential.get_token("https://search.azure.com/.default")
+    else:
+        credential = AzureKeyCredential(key)
+
+    index_client: SearchIndexClient = SearchIndexClient(
+        endpoint=endpoint, credential=credential, user_agent=user_agent
+    )
+
+    try:
+        index_client.get_index(name=index_name)
+    except ResourceNotFoundError:
+        _create_index(
+            index_name=index_name,
+            index_client=index_client,
+            semantic_configuration_name=semantic_configuration_name,
+            fields=fields,
+            vector_search=vector_search,
+            semantic_settings=semantic_settings,
+            scoring_profiles=scoring_profiles,
+            default_scoring_profile=default_scoring_profile,
+            default_fields=default_fields,
+        )
+
+    # Create the search client
+    return SearchClient(
+        endpoint=endpoint,
+        index_name=index_name,
+        credential=credential,
+        user_agent=user_agent,
+    )
+
+def _create_index(
+    index_name: str,
+    index_client: SearchIndexClient,
+    semantic_configuration_name: Optional[str] = None,
+    fields: Optional[List[SearchField]] = None,
+    vector_search: Optional[VectorSearch] = None,
+    semantic_settings: Optional[SemanticSettings] = None,
+    scoring_profiles: Optional[List[ScoringProfile]] = None,
+    default_scoring_profile: Optional[str] = None,
+    default_fields: Optional[List[SearchField]] = None
+    ):
+    
     from azure.search.documents.indexes.models import (
         HnswVectorSearchAlgorithmConfiguration,
         PrioritizedFields,
@@ -89,95 +140,76 @@ def _get_search_client(
         SemanticSettings,
         VectorSearch,
     )
-
-    default_fields = default_fields or []
-    if key is None:
-        credential = DefaultAzureCredential()
-    elif key.upper() == "INTERACTIVE":
-        credential = InteractiveBrowserCredential()
-        credential.get_token("https://search.azure.com/.default")
+     
+    # Fields configuration
+    if fields is not None:
+        # Check mandatory fields
+        fields_types = {f.name: f.type for f in fields}
+        mandatory_fields = {df.name: df.type for df in default_fields}
+        # Check for missing keys
+        missing_fields = {
+            key: mandatory_fields[key]
+            for key, value in set(mandatory_fields.items())
+            - set(fields_types.items())
+        }
+        if len(missing_fields) > 0:
+            fmt_err = lambda x: (  # noqa: E731
+                f"{x} current type: '{fields_types.get(x, 'MISSING')}'. It has to "
+                f"be '{mandatory_fields.get(x)}' or you can point to a different "
+                f"'{mandatory_fields.get(x)}' field name by using the env variable "
+                f"'AZURESEARCH_FIELDS_{x.upper()}'"
+            )
+            error = "\n".join([fmt_err(x) for x in missing_fields])
+            raise ValueError(
+                f"You need to specify at least the following fields "
+                f"{missing_fields} or provide alternative field names in the env "
+                f"variables.\n\n{error}"
+            )
     else:
-        credential = AzureKeyCredential(key)
-    index_client: SearchIndexClient = SearchIndexClient(
-        endpoint=endpoint, credential=credential, user_agent=user_agent
-    )
-    try:
-        index_client.get_index(name=index_name)
-    except ResourceNotFoundError:
-        # Fields configuration
-        if fields is not None:
-            # Check mandatory fields
-            fields_types = {f.name: f.type for f in fields}
-            mandatory_fields = {df.name: df.type for df in default_fields}
-            # Check for missing keys
-            missing_fields = {
-                key: mandatory_fields[key]
-                for key, value in set(mandatory_fields.items())
-                - set(fields_types.items())
-            }
-            if len(missing_fields) > 0:
-                fmt_err = lambda x: (  # noqa: E731
-                    f"{x} current type: '{fields_types.get(x, 'MISSING')}'. It has to "
-                    f"be '{mandatory_fields.get(x)}' or you can point to a different "
-                    f"'{mandatory_fields.get(x)}' field name by using the env variable "
-                    f"'AZURESEARCH_FIELDS_{x.upper()}'"
-                )
-                error = "\n".join([fmt_err(x) for x in missing_fields])
-                raise ValueError(
-                    f"You need to specify at least the following fields "
-                    f"{missing_fields} or provide alternative field names in the env "
-                    f"variables.\n\n{error}"
-                )
-        else:
-            fields = default_fields
-        # Vector search configuration
-        if vector_search is None:
-            vector_search = VectorSearch(
-                algorithm_configurations=[
-                    HnswVectorSearchAlgorithmConfiguration(
-                        name="default",
-                        kind="hnsw",
-                        parameters={  # type: ignore
-                            "m": 4,
-                            "efConstruction": 400,
-                            "efSearch": 500,
-                            "metric": "cosine",
-                        },
-                    )
-                ]
-            )
-        # Create the semantic settings with the configuration
-        if semantic_settings is None and semantic_configuration_name is not None:
-            semantic_settings = SemanticSettings(
-                configurations=[
-                    SemanticConfiguration(
-                        name=semantic_configuration_name,
-                        prioritized_fields=PrioritizedFields(
-                            prioritized_content_fields=[
-                                SemanticField(field_name=FIELDS_CONTENT)
-                            ],
-                        ),
-                    )
-                ]
-            )
-        # Create the search index with the semantic settings and vector search
-        index = SearchIndex(
-            name=index_name,
-            fields=fields,
-            vector_search=vector_search,
-            semantic_settings=semantic_settings,
-            scoring_profiles=scoring_profiles,
-            default_scoring_profile=default_scoring_profile,
-        )
-        index_client.create_index(index)
-    # Create the search client
-    return SearchClient(
-        endpoint=endpoint,
-        index_name=index_name,
-        credential=credential,
-        user_agent=user_agent,
-    )
+        fields = default_fields
 
+    # Vector search configuration
+    if vector_search is None:
+        vector_search = VectorSearch(
+            algorithm_configurations=[
+                HnswVectorSearchAlgorithmConfiguration(
+                    name="default",
+                    kind="hnsw",
+                    parameters={  # type: ignore
+                        "m": 4,
+                        "efConstruction": 400,
+                        "efSearch": 500,
+                        "metric": "cosine",
+                    },
+                )
+            ]
+        )
+
+    # Create the semantic settings with the configuration
+    if semantic_settings is None and semantic_configuration_name is not None:
+        semantic_settings = SemanticSettings(
+            configurations=[
+                SemanticConfiguration(
+                    name=semantic_configuration_name,
+                    prioritized_fields=PrioritizedFields(
+                        prioritized_content_fields=[
+                            SemanticField(field_name=FIELDS_CONTENT)
+                        ],
+                    ),
+                )
+            ]
+        )
+
+    # Create the search index with the semantic settings and vector search
+    index = SearchIndex(
+        name=index_name,
+        fields=fields,
+        vector_search=vector_search,
+        semantic_settings=semantic_settings,
+        scoring_profiles=scoring_profiles,
+        default_scoring_profile=default_scoring_profile,
+    )
+    index_client.create_index(index)
 
 class AzureSearch(VectorStore):
     """`Azure Cognitive Search` vector store."""
