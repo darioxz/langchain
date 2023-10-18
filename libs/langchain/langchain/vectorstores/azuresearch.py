@@ -222,7 +222,7 @@ class AzureSearch(VectorStore):
         else:
             credential = AzureKeyCredential(azure_search_key)
 
-        self.client = SearchClient(
+        self.client: SearchClient = SearchClient(
             endpoint=azure_search_endpoint,
             index_name=index_name,
             credential=credential,
@@ -230,7 +230,9 @@ class AzureSearch(VectorStore):
         )
 
         self.index_client: SearchIndexClient = SearchIndexClient(
-            endpoint=azure_search_endpoint, credential=credential, user_agent=user_agent
+            endpoint=azure_search_endpoint, 
+            credential=credential, 
+            user_agent=user_agent
         )
 
         try:
